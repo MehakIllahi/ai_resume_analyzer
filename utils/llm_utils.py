@@ -40,36 +40,66 @@ Job Description:
 
 def generate_resume(name, email, phone, role, skills, experience, education):
     prompt = f"""
-Create a PROFESSIONAL ATS FRIENDLY RESUME.
+Create a PROFESSIONAL ATS FRIENDLY RESUME in plain text format (NO MARKDOWN, NO BOLD FORMATTING).
 
 FORMAT EXACTLY:
 
-NAME (ALL CAPS)
-{role}
+{name.upper()}
 {email} | {phone}
+
+{role}
 
 SUMMARY
 2-3 lines professional summary.
 
 SKILLS
-• {skills}
+Frontend: skill1, skill2, skill3
+Backend: skill4, skill5, skill6
+Other: skill7, skill8
 
 EXPERIENCE
-{experience}
+Company Name | Timeline (e.g., 2020-2023)
+• Specific achievement or responsibility
+• Another key accomplishment
+• Technical contribution
+
+Another Company Name | Timeline
+• Achievement 1
+• Achievement 2
 
 EDUCATION
-{education}
+Bachelor's Degree in Computer Science | University Name
+
+(Only include the degree and university. Do NOT include graduation dates, GPA, coursework, or other details.)
+
+IMPORTANT:
+- Use PLAIN TEXT only
+- NO ** or bold formatting anywhere
+- Use • bullet points ONLY for individual experience achievements
+- Company names and timelines should be plain text (no bullets)
+- Education section: ONLY degree and university name
+- Do not add notes or disclaimers
+- Keep role as a single line before SUMMARY
+- Summary should be upon summary
+
+Skills to organize: {skills}
+Experience details: {experience}
+Education details: {education}
 """
 
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": "You are a professional resume writer."},
+            {"role": "system", "content": "You are a professional resume writer. Generate PLAIN TEXT resumes with no markdown formatting."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.3
     )
-    return response.choices[0].message.content
+    
+    resume_text = response.choices[0].message.content
+    # Remove any ** bold formatting
+    resume_text = resume_text.replace("**", "")
+    return resume_text
 
 
 def extract_resume_fields(resume_text):
@@ -79,20 +109,20 @@ Extract the following fields from the resume text and return ONLY valid JSON wit
 - `name`: string
 - `email`: string
 - `phone`: string
-- `skills`: string (comma or newline separated)
-- `experience`: string (can be multiple lines)
-- `education`: string
+- `skills`: string with skills organized by category like "Frontend: React, Vue\\nBackend: Node, Django\\nOther: Python, SQL"
+- `experience`: string (can be multiple lines, separate companies with double newline)
+- `education`: string (separate entries with double newline)
 
 Resume:
 {resume_text}
 
-Return only JSON.
+Return ONLY JSON, no markdown or extra text.
 """
 
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": "You are a JSON extractor. Output only JSON."},
+            {"role": "system", "content": "You are a JSON extractor. Output ONLY valid JSON."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.0
@@ -125,8 +155,14 @@ Return only JSON.
         skills_match = re.search(r"(?i)skills?[:\-]?\s*(?:\n)?(.+?)(?=\n\s*\n|\n[A-Z]{2,}|$)", resume_text, re.S)
         if skills_match:
             skills_text = skills_match.group(1).strip()
-            skills_list = [s.strip("•- ") for s in re.split(r",|\n|•|-", skills_text) if s.strip()]
-            data["skills"] = ", ".join(skills_list)
+            # Try to preserve category format if present
+            if ":" in skills_text:
+                # already categorized
+                data["skills"] = skills_text
+            else:
+                # convert to simple format
+                skills_list = [s.strip("•- ") for s in re.split(r",|\n|•|-", skills_text) if s.strip()]
+                data["skills"] = ", ".join(skills_list)
 
         # experience
         exp_match = re.search(r"(?i)experience[:\-]?\s*(?:\n)?(.+?)(?=\n\s*\n|\n[A-Z]{2,}|$)", resume_text, re.S)
