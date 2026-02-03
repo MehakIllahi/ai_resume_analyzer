@@ -1,107 +1,159 @@
 import streamlit as st
+import json
+
 from utils.pdf_utils import extract_pdf_text
 from utils.similarity_utils import calculate_similarity
 from utils.score_utils import extract_average_score
-from utils.llm_utils import analyze_resume, generate_resume
+from utils.llm_utils import (
+    analyze_resume,
+    generate_resume,
+    extract_resume_fields
+)
 from utils.resume_pdf import generate_resume_pdf
 
 
-st.set_page_config(page_title="AI Resume Assistant", layout="wide")
-
-st.title(" AI Resume Assistant")
-
-# Initialize session state for caching analysis results
-if "last_analysis_cache" not in st.session_state:
-    st.session_state.last_analysis_cache = {}
+st.set_page_config("AI Resume Assistant", layout="wide")
+st.title("🤖 AI Resume Assistant")
 
 tab1, tab2 = st.tabs(["📊 Resume Analyzer", "🧱 Resume Generator"])
 
-# ---------------- ANALYZER ----------------
-with tab1:
-    with st.form("analyze_form"):
-        resume_file = st.file_uploader("Upload Resume (PDF)", type="pdf")
-        jd = st.text_area("Job Description", placeholder="Paste the job description here...")
-        submitted = st.form_submit_button("Analyze")
 
-    if submitted:
-        if not (resume_file and jd):
-            st.warning("Please upload a resume PDF and provide the job description.")
-        else:
-            with st.spinner("Extracting resume and generating analysis..."):
-                resume_text = extract_pdf_text(resume_file)
-                
-                # Create a simple cache key from first 100 chars of resume and JD
-                cache_key = f"{hash(resume_text[:100])}-{hash(jd[:100])}"
-                
-                # Check if we have cached results
-                if cache_key in st.session_state.last_analysis_cache:
-                    cached = st.session_state.last_analysis_cache[cache_key]
-                    ats = cached["ats"]
-                    report = cached["report"]
-                    avg = cached["avg"]
-                    st.info("📌 Using cached analysis (from previous run)")
-                else:
+# ================= ANALYZER =================
+with tab1:
+    resume_file = st.file_uploader("Upload Resume PDF", type="pdf")
+    jd = st.text_area("Job Description")
+
+    if st.button("Analyze Resume"):
+        if resume_file and jd:
+            try:
+                with st.spinner("Extracting resume..."):
+                    resume_text = extract_pdf_text(resume_file)
+
+                with st.spinner("Analyzing with AI..."):
                     ats = calculate_similarity(resume_text, jd)
                     report = analyze_resume(resume_text, jd)
                     avg = extract_average_score(report)
-                    
-                    # Cache the results
-                    st.session_state.last_analysis_cache[cache_key] = {
-                        "ats": ats,
-                        "report": report,
-                        "avg": avg
-                    }
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("Few ATS use this score to shortlist candidates — Similarity Score:")
-                st.subheader(f"{round(ats, 3)}")
-            with col2:
-                st.write("Total Average score according to our AI report:")
-                st.subheader(f"{round(avg, 3)}")
+                st.metric("ATS Similarity Score", round(ats, 3))
+                st.metric("AI Average Score", round(avg, 2))
+                st.markdown(report)
 
-            st.success("Scores generated successfully!")
+            except ValueError as e:
+                st.error(str(e))
 
-            st.subheader("AI Generated Analysis Report:")
-            st.markdown(
-                f"""
-                <div style='text-align: left; background-color: #0b0b0b; color: #e6e6e6; padding: 16px; border-radius: 8px; margin: 8px 0;'>
-                    {report}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            st.download_button(
-                label="Download Report",
-                data=report,
-                file_name="resume_report.txt",
-                mime="text/plain",
-            )
-
-# ---------------- GENERATOR ----------------
-with tab2:
-    with st.form("generate_form"):
-        name = st.text_input("Full Name")
-        email = st.text_input("Email Address")
-        phone = st.text_input("Phone")
-        role = st.text_input("Target Role")
-        skills = st.text_area("Skills (comma separated or bullets)")
-        experience = st.text_area("Experience (brief)")
-        education = st.text_area("Education")
-        gen_submitted = st.form_submit_button("Generate Resume PDF")
-
-    if gen_submitted:
-        if not (name and role):
-            st.warning("Name and Target Role are required to generate a resume.")
         else:
-            with st.spinner("Generating resume..."):
-                resume_text = generate_resume(name, email, phone, role, skills, experience, education)
-                pdf_path = "generated_resume.pdf"
-                generate_resume_pdf(pdf_path, resume_text)
+            st.warning("Please upload resume and job description")
 
-            st.subheader("Preview (Text)")
-            st.text(resume_text)
 
-            with open(pdf_path, "rb") as f:
-                st.download_button("📄 Download Resume PDF", f, file_name="resume.pdf")
+# ================= GENERATOR =================
+with tab2:
+    st.subheader("📥 Paste Resume / Profile Summary")
+
+    raw_text = st.text_area(
+        "Paste resume content",
+        height=250
+    )
+
+    if st.button("✨ Auto-fill from text"):
+        with st.spinner("Extracting..."):
+            data = extract_resume_fields(raw_text)
+            if isinstance(data, dict):
+                st.session_state.update(data)
+            else:
+                st.error("Failed to extract resume data")
+
+            st.success("Auto-filled successfully")
+
+    # Initialize session state for dynamic fields
+    if "skills_list" not in st.session_state:
+        st.session_state.skills_list = [""]
+    if "education_list" not in st.session_state:
+        st.session_state.education_list = [""]
+    if "experience_list" not in st.session_state:
+        st.session_state.experience_list = [""]
+
+    with st.form("resume_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            name = st.text_input("Name", st.session_state.get("name", ""))
+            email = st.text_input("Email", st.session_state.get("email", ""))
+        with col2:
+            phone = st.text_input("Phone", st.session_state.get("phone", ""))
+            role = st.text_input("Target Role")
+
+        # ===== SKILLS (Dynamic) =====
+        st.markdown("### 📌 Skills")
+        skills_list = st.session_state.skills_list
+        for idx, skill in enumerate(skills_list):
+            st.text_input(f"Skill {idx + 1}", value=skill, key=f"skill_{idx}")
+
+        col_s1, col_s2 = st.columns([1, 1])
+        with col_s1:
+            if st.form_submit_button("➕ Add Skill"):
+                st.session_state.skills_list.append("")
+                st.rerun()
+        with col_s2:
+            if len(skills_list) > 1 and st.form_submit_button("➖ Remove Last Skill"):
+                st.session_state.skills_list.pop()
+                st.rerun()
+
+        st.divider()
+
+        # ===== EDUCATION (Dynamic) =====
+        st.markdown("### 🎓 Education")
+        education_list = st.session_state.education_list
+        for idx, edu in enumerate(education_list):
+            st.text_area(f"Education {idx + 1}", value=edu, height=80, key=f"education_{idx}")
+
+        col_e1, col_e2 = st.columns([1, 1])
+        with col_e1:
+            if st.form_submit_button("➕ Add Education"):
+                st.session_state.education_list.append("")
+                st.rerun()
+        with col_e2:
+            if len(education_list) > 1 and st.form_submit_button("➖ Remove Last Education"):
+                st.session_state.education_list.pop()
+                st.rerun()
+
+        st.divider()
+
+        # ===== EXPERIENCE (Dynamic) =====
+        st.markdown("### 💼 Experience")
+        experience_list = st.session_state.experience_list
+        for idx, exp in enumerate(experience_list):
+            st.text_area(f"Experience {idx + 1}", value=exp, height=80, key=f"experience_{idx}")
+
+        col_ex1, col_ex2 = st.columns([1, 1])
+        with col_ex1:
+            if st.form_submit_button("➕ Add Experience"):
+                st.session_state.experience_list.append("")
+                st.rerun()
+        with col_ex2:
+            if len(experience_list) > 1 and st.form_submit_button("➖ Remove Last Experience"):
+                st.session_state.experience_list.pop()
+                st.rerun()
+
+        st.divider()
+        submitted = st.form_submit_button("✅ Generate Resume PDF")
+
+    if submitted:
+        # Collect all skills, education, and experience from form
+        skills_collected = [st.session_state.get(f"skill_{i}", "") for i in range(len(st.session_state.skills_list))]
+        education_collected = [st.session_state.get(f"education_{i}", "") for i in range(len(st.session_state.education_list))]
+        experience_collected = [st.session_state.get(f"experience_{i}", "") for i in range(len(st.session_state.experience_list))]
+
+        skills_str = ", ".join([s.strip() for s in skills_collected if s.strip()])
+        education_str = "\n\n".join([e.strip() for e in education_collected if e.strip()])
+        experience_str = "\n\n".join([e.strip() for e in experience_collected if e.strip()])
+
+        resume_text = generate_resume(
+            name, email, phone, role, skills_str, experience_str, education_str
+        )
+
+        generate_resume_pdf("resume.pdf", resume_text)
+
+        st.subheader("Preview")
+        st.text(resume_text)
+
+        with open("resume.pdf", "rb") as f:
+            st.download_button("📄 Download Resume PDF", f, "resume.pdf")
