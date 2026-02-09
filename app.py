@@ -59,6 +59,7 @@ with tab2:
         st.session_state.skills = data.get("skills", "")
         st.session_state.education = data.get("education", "")
         st.session_state.experience = data.get("experience", "")
+        st.session_state.projects = data.get("projects", "")
 
         st.success("Auto-filled successfully")
         st.rerun()
@@ -70,6 +71,7 @@ with tab2:
     st.session_state.setdefault("skills", "")
     st.session_state.setdefault("education", "")
     st.session_state.setdefault("experience", "")
+    st.session_state.setdefault("projects", "")
 
     with st.form("resume_form"):
         col1, col2 = st.columns(2)
@@ -99,6 +101,13 @@ with tab2:
             value=st.session_state.experience,
             height=180
         )
+        st.markdown("### 🧩 Projects")
+        projects = st.text_area(
+            "Projects",
+            value=st.session_state.projects,
+            height=160
+        )
+
 
         submitted = st.form_submit_button("✅ Generate Resume PDF")
 
@@ -115,7 +124,8 @@ with tab2:
                 role="",
                 skills=skills,
                 experience=experience,
-                education=education
+                education=education,
+                projects=projects
             )
 
             cleaned_resume = clean_preview_text(resume_text)

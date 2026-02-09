@@ -38,11 +38,22 @@ Job Description:
     return response.choices[0].message.content
 
 
-def generate_resume(name, email, phone, role, skills, experience, education):
-    prompt = f"""
-Create a PROFESSIONAL ATS FRIENDLY RESUME in plain text format (NO MARKDOWN, NO BOLD FORMATTING).
+# ================= GENERATE RESUME =================
+# def generate_resume(name, email, phone, role, skills, experience, education, projects=""):
+    experience = experience.strip()
+    is_fresher = experience == ""
 
-FORMAT EXACTLY:
+    prompt = f"""
+Create a PROFESSIONAL ATS FRIENDLY RESUME in plain text.
+
+STRICT RULES:
+- NO markdown
+- NO **
+- Use • bullets ONLY in EXPERIENCE and PROJECTS
+- EXPERIENCE: exactly 4–5 bullets PER COMPANY
+- EDUCATION: ONE LINE ONLY, NO bullets
+
+FORMAT:
 
 {name.upper()}
 {email} | {phone}
@@ -53,133 +64,311 @@ SUMMARY
 2-3 lines professional summary.
 
 SKILLS
-Frontend: skill1, skill2, skill3
-Backend: skill4, skill5, skill6
-Other: skill7, skill8
+Frontend: ...
+Backend: ...
+Other: ...
+"""
 
+    # ================= EXPERIENCE =================
+    if not is_fresher:
+        prompt += f"""
 EXPERIENCE
-Company Name | Timeline (e.g., 2020-2023)
-• Specific achievement or responsibility
-• Another key accomplishment
-• Technical contribution
 
-Another Company Name | Timeline
-• Achievement 1
-• Achievement 2
+Company Name | Role | Timeline
+• Responsibility or achievement
+• Responsibility or achievement
+• Responsibility or achievement
+• Responsibility or achievement
 
+RULES:
+- Internship counts as experience
+- Company line must NOT be a bullet
+- Bullets ONLY under company
+- DO NOT invent experience
+
+INPUT EXPERIENCE TEXT:
+{experience}
+"""
+
+    # ================= PROJECTS =================
+    if projects.strip():
+        prompt += f"""
+PROJECTS
+
+PROJECT NAME | TIMELINE
+• What you built
+• Tech stack
+• Outcome
+
+RULES FOR PROJECTS:
+- Project name + timeline MUST be in UPPERCASE
+- NO bullets on project title line
+- Bullets ONLY for descriptions
+
+INPUT PROJECT TEXT:
+{projects}
+"""
+
+    # ================= EDUCATION =================
+    prompt += f"""
 EDUCATION
-Bachelor's Degree in Computer Science | University Name
+Degree | University | Timeline
 
-(Only include the degree and university. Do NOT include graduation dates, GPA, coursework, or other details.)
+INPUT EDUCATION TEXT:
+{education}
 
 IMPORTANT:
-- Use PLAIN TEXT only
-- NO ** or bold formatting anywhere
-- Use • bullet points ONLY for individual experience achievements
-- Company names and timelines should be plain text (no bullets)
-- Education section: ONLY degree and university name
-- Do not add notes or disclaimers
-- Keep role as a single line before SUMMARY
-- Summary should be upon summary
-
-Skills to organize: {skills}
-Experience details: {experience}
-Education details: {education}
+- NEVER add EXPERIENCE section for freshers
+- NEVER add bullets under EDUCATION
 """
 
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": "You are a professional resume writer. Generate PLAIN TEXT resumes with no markdown formatting."},
+            {
+                "role": "system",
+                "content": (
+                    "You are an ATS resume writer. "
+                    "Strictly follow fresher vs experienced rules. "
+                    "Plain text only."
+                )
+            },
             {"role": "user", "content": prompt}
         ],
-        temperature=0.3
+        temperature=0.2
     )
-    
+
     resume_text = response.choices[0].message.content
-    # Remove any ** bold formatting
+
+    # Cleanup
     resume_text = resume_text.replace("**", "")
+    resume_text = re.sub(r"(EDUCATION[\s\S]*?)(\n\s*•.*)+", r"\1", resume_text)
+
     return resume_text
 
 
-def extract_resume_fields(resume_text):
-    prompt = f"""
-Extract the following fields from the resume text and return ONLY valid JSON with keys: name, email, phone, skills, experience, education.
+# ================= SORT EXPERIENCE =================
+def extract_end_year(block):
+    match = re.search(r"\|\s*\d{4}\s*[-–]\s*(\d{4}|Present|present)", block)
+    if not match:
+        return 0
+    return 9999 if "present" in match.group(1).lower() else int(match.group(1))
 
-- `name`: string
-- `email`: string
-- `phone`: string
-- `skills`: string with skills organized by category like "Frontend: React, Vue\\nBackend: Node, Django\\nOther: Python, SQL"
-- `experience`: string (can be multiple lines, separate companies with double newline)
-- `education`: string (separate entries with double newline)
+
+# ================= EXTRACT RESUME FIELDS =================
+def extract_resume_fields(resume_text):
+    """
+    Extracts resume fields from AI-generated resume.
+    Internships are always included in experience.
+    Skills are reliably extracted.
+    """
+
+    prompt = f"""
+Extract resume fields from the following resume and return ONLY valid JSON.
+
+IMPORTANT:
+- EXPERIENCE must include full block:
+  Company | Role | Timeline
+  followed by • bullets
+- Internship IS experience
+- If no internship or job → experience = ""
+- Preserve bullets EXACTLY using •
+- Return skills exactly as in the resume
+
+JSON FORMAT:
+{{
+  "name": "",
+  "email": "",
+  "phone": "",
+  "frontend": "",
+  "skills": "",
+  "experience": "",
+  "projects": "",
+  "education": ""
+}}
 
 Resume:
 {resume_text}
 
-Return ONLY JSON, no markdown or extra text.
+Return ONLY JSON. Do not add extra text.
 """
 
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": "You are a JSON extractor. Output ONLY valid JSON."},
+            {"role": "system", "content": "Strict JSON extractor."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.0
+        temperature=0
     )
 
-    content = response.choices[0].message.content.strip()
+    raw = re.sub(r"```json|```", "", response.choices[0].message.content).strip()
 
-    # Clean markdown if any
-    content = re.sub(r"```json|```", "", content).strip()
-
+    # Attempt to parse JSON
     try:
-        data = json.loads(content)
+        data = json.loads(raw)
     except json.JSONDecodeError:
-        # Fallback: simple heuristic extraction
+        # fallback: extract skills manually
         data = {}
-        email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", resume_text)
-        if email_match:
-            data["email"] = email_match.group(0)
+        frontend_match = re.search(r"Frontend:\s*(.+)", resume_text)
+        backend_match = re.search(r"Backend:\s*(.+)", resume_text)
+        other_match = re.search(r"Other:\s*(.+)", resume_text)
+        skills_list = []
+        if frontend_match: skills_list.append(frontend_match.group(1).strip())
+        if backend_match: skills_list.append(backend_match.group(1).strip())
+        if other_match: skills_list.append(other_match.group(1).strip())
+        data["skills"] = ", ".join(skills_list)
+        # Experience extraction
+        exp_match = re.search(r"(EXPERIENCE[\s\S]*?)\n\n(?:PROJECTS|EDUCATION)", resume_text)
+        data["experience"] = exp_match.group(1).replace("EXPERIENCE\n", "").strip() if exp_match else ""
 
-        phone_match = re.search(r"(\+?\d[\d\-\s]{7,}\d)", resume_text)
-        if phone_match:
-            data["phone"] = phone_match.group(0).strip()
+    def safe(key):
+        val = data.get(key, "")
+        return val.strip() if isinstance(val, str) else ""
 
-        # name: first non-empty line
-        lines = [l.strip() for l in resume_text.splitlines() if l.strip()]
-        if lines:
-            data["name"] = lines[0]
+# ---------- SORT EXPERIENCE (LATEST FIRST) ----------
+    experience = safe("experience")
+    if experience:
+        # Split by company/internship blocks
+        blocks = re.split(r"\n(?=[A-Z].+?\|.+?\|)", experience)
+        cleaned_blocks = []
 
-        # skills
-        skills_match = re.search(r"(?i)skills?[:\-]?\s*(?:\n)?(.+?)(?=\n\s*\n|\n[A-Z]{2,}|$)", resume_text, re.S)
-        if skills_match:
-            skills_text = skills_match.group(1).strip()
-            # Try to preserve category format if present
-            if ":" in skills_text:
-                # already categorized
-                data["skills"] = skills_text
-            else:
-                # convert to simple format
-                skills_list = [s.strip("•- ") for s in re.split(r",|\n|•|-", skills_text) if s.strip()]
-                data["skills"] = ", ".join(skills_list)
+        for block in blocks:
+            block = block.strip()
+            # Only include blocks with bullets (experience) or valid company line
+            if "•" in block:
+                cleaned_blocks.append(block)
+            elif "Internship" in block and block not in cleaned_blocks:
+                cleaned_blocks.append(block)
 
-        # experience
-        exp_match = re.search(r"(?i)experience[:\-]?\s*(?:\n)?(.+?)(?=\n\s*\n|\n[A-Z]{2,}|$)", resume_text, re.S)
-        if exp_match:
-            data["experience"] = exp_match.group(1).strip()
+        # Sort blocks by end year
+        cleaned_blocks.sort(key=extract_end_year, reverse=True)
+        experience = "\n\n".join(cleaned_blocks)
 
-        # education
-        edu_match = re.search(r"(?i)education[:\-]?\s*(?:\n)?(.+?)(?=\n\s*\n|\n[A-Z]{2,}|$)", resume_text, re.S)
-        if edu_match:
-            data["education"] = edu_match.group(1).strip()
 
-    # Ensure returning simple strings so Streamlit text_area shows them
+    # ---------- FRESHER HARD CHECK ----------
+    if not experience.strip():
+        experience = ""
+
     return {
-        "name": str(data.get("name", "")),
-        "email": str(data.get("email", "")),
-        "phone": str(data.get("phone", "")),
-        "skills": str(data.get("skills", "")),
-        "experience": str(data.get("experience", "")),
-        "education": str(data.get("education", ""))
+        "name": safe("name"),
+        "email": safe("email"),
+        "phone": safe("phone"),
+        "frontend": safe("frontend"),
+        "skills": safe("skills"),
+        "experience": experience,
+        "projects": safe("projects"),
+        "education": safe("education")
     }
+
+def generate_resume(name, email, phone, role, skills, experience, education, projects=""):
+    """
+    Generates ATS-friendly resume in plain text.
+    EXPERIENCE section is included only if there is real work experience (not internships).
+    PROJECTS section is included only if there are projects.
+    """
+    experience = experience.strip()
+    projects = projects.strip()
+    is_fresher = experience == ""  # True if no real work experience
+
+    # Handle skills: works for both dict and string
+    if isinstance(skills, str):
+        frontend_skills = backend_skills = other_skills = skills
+    else:
+        frontend_skills = skills.get("frontend", "")
+        backend_skills = skills.get("backend", "")
+        other_skills = skills.get("other", "")
+
+    # ================= BASE PROMPT =================
+    prompt = f"""
+Create a PROFESSIONAL ATS FRIENDLY RESUME in plain text.
+
+STRICT RULES:
+- NO markdown
+- NO **
+- Use • bullets ONLY in EXPERIENCE and PROJECTS
+- EDUCATION: ONE LINE ONLY, NO bullets
+
+FORMAT:
+
+{name.upper()}
+{email} | {phone}
+
+{role}
+
+SUMMARY
+2-3 lines professional summary.
+
+SKILLS
+Frontend: {frontend_skills}
+Backend: {backend_skills}
+Other: {other_skills}
+"""
+
+    # ================= EXPERIENCE =================
+    if not is_fresher:
+        # Only include EXPERIENCE if there is real work experience
+        prompt += f"""
+EXPERIENCE
+
+Include all real jobs exactly as provided (internships will be ignored here).
+For each company, provide 4 bullets describing responsibilities or achievements.
+
+INPUT EXPERIENCE TEXT:
+{experience}
+"""
+
+    # ================= PROJECTS =================
+    if projects:
+        prompt += f"""
+PROJECTS
+
+PROJECT NAME | TIMELINE
+• What you built
+• Tech stack
+• Outcome
+
+INPUT PROJECT TEXT:
+{projects}
+"""
+
+    # ================= EDUCATION =================
+    prompt += f"""
+EDUCATION
+Degree | University | Timeline
+
+INPUT EDUCATION TEXT:
+{education}
+
+IMPORTANT:
+- Do not invent EXPERIENCE for freshers
+- Only include PROJECTS if provided
+- Never add bullets under EDUCATION
+"""
+
+    # ================= CALL AI =================
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an ATS resume writer. "
+                    "Only include EXPERIENCE section if there is real work experience, "
+                    "do not include internships as EXPERIENCE. "
+                    "Include PROJECTS only if provided. "
+                    "Generate plain text resume only."
+                )
+            },
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2
+    )
+
+    resume_text = response.choices[0].message.content
+
+    # Cleanup
+    resume_text = resume_text.replace("**", "")
+    resume_text = re.sub(r"(EDUCATION[\s\S]*?)(\n\s*•.*)+", r"\1", resume_text)
+
+    return resume_text
